@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head><link rel="stylesheet" href="yungking.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+  <title>Huperoon-Church - Registre local (base absolue)</title>
+  <!-- jsPDF -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.25/jspdf.plugin.autotable.min.js"></script>
+  </head>
+<body>
+<div class="container">
+
+  <div class="header">
+    <div class="logo-area">
+      <div class="logo-icon">⛪</div>
+      <div class="title">
+        <h1>Huperoon-<span>Church</span></h1>
+        <p>Registre local - Base de données absolue</p>
+      </div>
+    </div>
+    <div class="date-badge" id="liveDate"></div>
+  </div>
+
+  <div class="stats-banner">
+    <div class="stats-banner-left">
+      <span>📀</span>
+      <div>
+        <div class="stats-number" id="totalCount">0</div>
+        <div class="stats-label">personnes enregistrées</div>
+      </div>
+    </div>
+    <div class="local-badge">
+      <div>💾 Base de données locale</div>
+      <div>📱 Stockée sur ce téléphone uniquement</div>
+    </div>
+  </div>
+
+  <div class="stats-grid">
+    <div class="stat-card"><div class="stat-info"><h3 id="statMembers">0</h3><p>Membres</p></div><div class="stat-icon"></div></div>
+    <div class="stat-card"><div class="stat-info"><h3 id="statVisitors">0</h3><p>Visiteurs</p></div><div class="stat-icon"></div></div>
+    <div class="stat-card"><div class="stat-info"><h3 id="statToday">0</h3><p>Aujourd'hui</p></div><div class="stat-icon"></div></div>
+    <div class="stat-card"><div class="stat-info"><h3 id="statTotal">0</h3><p>Total</p></div><div class="stat-icon"></div></div>
+  </div>
+
+  <div class="form-section">
+    <div class="form-header"><h2>✝️ Nouvelle inscription</h2><p>Enregistrement local (pas de partage)</p></div>
+    <div class="form-body">
+      <div class="form-grid">
+        <div class="form-group"><label>Nom *</label><input type="text" id="inputNom" placeholder="Nom"></div>
+        <div class="form-group"><label>Prénom *</label><input type="text" id="inputPrenom" placeholder="Prénom"></div>
+        <div class="form-group"><label>Lieu</label><input type="text" id="inputLieu" placeholder="Quartier / Ville"></div>
+        <div class="form-group"><label>Contact</label><input type="text" id="inputContact" placeholder="Email ou Tél"></div>
+        <div class="form-group">
+          <label>Statut</label>
+          <select id="inputType">
+            <option value="member">Membre Huperoon-Church</option>
+            <option value="visitor">Visiteur (autre église)</option>
+          </select>
+        </div>
+        <div class="form-group" id="visitorChurchGroup" style="display:none;">
+          <label>Nom de son église</label>
+          <input type="text" id="inputVisitorChurch" placeholder="Nom de l'église">
+        </div>
+      </div>
+      <button class="btn-submit" id="btnSubmit">✨ Enregistrer la présence</button>
+    </div>
+  </div>
+
+  <div class="list-section">
+    <div class="list-toolbar">
+      <h3>📋 Liste des présences <span class="badge-db">💾 Base absolue</span></h3>
+      <button class="btn-submit" style="background:#28a745; padding:6px 12px; width:auto; margin:0;" id="exportBtn">📄 Exporter PDF</button>
+    </div>
+    <div class="filters">
+      <button class="filter-btn active" data-filter="all">👥 Tous</button>
+      <button class="filter-btn" data-filter="member">⛪ Membres</button>
+      <button class="filter-btn" data-filter="visitor">🫂 Visiteurs</button>
+    </div>
+    <input type="text" id="searchInput" class="search-input" placeholder="🔍 Rechercher...">
+    <div class="table-wrapper">
+      <table id="mainTable">
+        <thead><tr><th></th><th>Nom et prénom</th><th>Lieu</th><th>Contact</th><th>Statut</th><th>Date</th></th><th></th></tr></thead>
+        <tbody id="tableBody"></tbody>
+      </table>
+      <div id="emptyState" class="empty-state">📭 Aucune personne enregistrée</div>
+    </div>
+  </div>
+</div>
+<div id="toast" class="toast"></div>
+
+<script>
+  // ==================== BASE DE DONNÉES ABSOLUE (IndexedDB) ====================
+  const DB_NAME = 'HuperoonChurchDB';
+  const DB_VERSION = 1;
+  const STORE_NAME = 'presences';
+  
+  let db = null;
+  let people = [];
+  let currentFilter = 'all';
+  let searchTimeout = null;
+  
+  // Ouvrir la base IndexedDB
+  function openDB() {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(DB_NAME, DB_VERSION);
+      request.onerror = (event) => {
+        console.error('Erreur IndexedDB', event);
+        reject('Impossible d\'ouvrir la base de données');
+      };
+      request.onsuccess = (event) => {
+        db = event.target.result;
+        resolve(db);
+      };
+      request.onupgradeneeded = (event) => {
+        const dbRef = event.target.result;
+        if (!dbRef.objectStoreNames.contains(STORE_NAME)) {
+          const store = dbRef.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
+          store.createIndex('date', 'date', { unique: false });
+          store.createIndex('is_member', 'is_member', { unique: false });
+        }
+      };
+    });
+  }
+  
+  // Récupérer toutes les personnes
+  async function loadAllPeople() {
+    if (!db) await openDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction([STORE_NAME], 'readonly');
+      const store = transaction.objectStore(STORE_NAME);
+      const request = store.getAll();
+      request.onsuccess = () => {
+        const items = request.result;
+        // Trier par date décroissante
+        items.sort((a, b) => new Date(b.date) - new Date(a.date));
+        resolve(items);
+      };
+      request.onerror = () => reject(request.error);
+    });
+  }
+  
+  // Ajouter une personne
+  async function addPersonToDB(person) {
+    if (!db) await openDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction([STORE_NAME], 'readwrite');
+      const store = transaction.objectStore(STORE_NAME);
+      const request = store.add(person);
+      request.onsuccess = () => {
+        resolve(request.result);
+      };
+      request.onerror = () => reject(request.error);
+    });
+  }
+  
+  // Supprimer une personne par son id (auto-incrémenté)
+  async function deletePersonFromDB(id) {
+    if (!db) await openDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction([STORE_NAME], 'readwrite');
+      const store = transaction.objectStore(STORE_NAME);
+      const request = store.delete(id);
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    });
+  }
+  
+  // ========== INTERFACE UTILISATEUR ==========
+  function showToast(msg, type = 'info') {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.className = `toast ${type} show`;
+    setTimeout(() => t.classList.remove('show'), 3000);
+  }
+  
+  function escapeHtml(s) { if (!s) return ''; return String(s).replace(/[&<>]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[m])); }
+  
+  document.getElementById('inputType').addEventListener('change', function() {
+    document.getElementById('visitorChurchGroup').style.display = this.value === 'visitor' ? 'block' : 'none';
+  });
+  
+  function clearForm() {
+    document.getElementById('inputNom').value = '';
+    document.getElementById('inputPrenom').value = '';
+    document.getElementById('inputLieu').value = '';
+    document.getElementById('inputContact').value = '';
+    document.getElementById('inputVisitorChurch').value = '';
+    document.getElementById('inputType').value = 'member';
+    document.getElementById('visitorChurchGroup').style.display = 'none';
+  }
+  
+  // Mettre à jour stats + tableau
+  function updateUI() {
+    const total = people.length;
+    const members = people.filter(p => p.is_member === true).length;
+    const visitors = people.filter(p => p.is_member === false).length;
+    const today = people.filter(p => {
+      const pDate = new Date(p.date);
+      const todayDate = new Date();
+      return pDate.toDateString() === todayDate.toDateString();
+    }).length;
+    
+    document.getElementById('statTotal').textContent = total;
+    document.getElementById('statMembers').textContent = members;
+    document.getElementById('statVisitors').textContent = visitors;
+    document.getElementById('statToday').textContent = today;
+    document.getElementById('totalCount').textContent = total;
+    
+    renderList();
+  }
+  
+  function renderList() {
+    const search = document.getElementById('searchInput').value.toLowerCase();
+    let filtered = [...people];
+    
+    if (currentFilter === 'member') filtered = filtered.filter(p => p.is_member === true);
+    if (currentFilter === 'visitor') filtered = filtered.filter(p => p.is_member === false);
+    
+    if (search) {
+      filtered = filtered.filter(p => 
+        (p.nom || '').toLowerCase().includes(search) ||
+        (p.prenom || '').toLowerCase().includes(search) ||
+        (p.lieu || '').toLowerCase().includes(search)
+      );
+    }
+    
+    const tbody = document.getElementById('tableBody');
+    const empty = document.getElementById('emptyState');
+    const table = document.getElementById('mainTable');
+    
+    if (filtered.length === 0) {
+      tbody.innerHTML = '';
+      empty.style.display = 'block';
+      table.style.display = 'none';
+      return;
+    }
+    
+    empty.style.display = 'none';
+    table.style.display = 'table';
+    
+    tbody.innerHTML = filtered.map(p => {
+      const initials = ((p.nom || '')[0] || '') + ((p.prenom || '')[0] || '');
+      const badge = p.is_member
+        ? '<span class="member-badge">⛪ Membre</span>'
+        : `<span class="visitor-badge">🫂 Visiteur (${escapeHtml(p.church_name || '?')})</span>`;
+      const dateStr = new Date(p.date).toLocaleString('fr-FR', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' });
+      return `
+        <tr>
+          <td><div class="avatar">${initials.toUpperCase() || '?'}</div></td>
+          <td><strong>${escapeHtml(p.nom)}</strong> ${escapeHtml(p.prenom)}</td>
+          <td>${escapeHtml(p.lieu) || '—'}</td>
+          <td>${escapeHtml(p.contact) || '—'}</td>
+          <td>${badge}</td>
+          <td style="font-size:11px">${dateStr}</td>
+          <td><button class="delete-btn" onclick="deletePersonById(${p.id})">🗑️</button></td>
+        </tr>
+      `;
+    }).join('');
+  }
+  
+  function setFilter(filter) {
+    currentFilter = filter;
+    document.querySelectorAll('.filter-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.filter === filter);
+    });
+    renderList();
+  }
+  
+  // Ajouter une inscription
+  async function addPerson() {
+    const nom = document.getElementById('inputNom').value.trim();
+    const prenom = document.getElementById('inputPrenom').value.trim();
+    if (!nom || !prenom) {
+      showToast('Nom et prénom requis', 'error');
+      return;
+    }
+    
+    const btn = document.getElementById('btnSubmit');
+    btn.disabled = true;
+    btn.textContent = '⏳ Enregistrement...';
+    
+    const isVisitor = document.getElementById('inputType').value === 'visitor';
+    const newPerson = {
+      nom: nom,
+      prenom: prenom,
+      lieu: document.getElementById('inputLieu').value.trim() || '',
+      contact: document.getElementById('inputContact').value.trim() || '',
+      is_member: !isVisitor,
+      church_name: isVisitor ? (document.getElementById('inputVisitorChurch').value.trim() || 'Non spécifiée') : null,
+      date: new Date().toISOString(),
+      status: 'present'
+    };
+    
+    try {
+      const newId = await addPersonToDB(newPerson);
+      newPerson.id = newId;
+      people.unshift(newPerson); // ajouter en tête (le plus récent)
+      updateUI();
+      showToast(`✅ ${prenom} ${nom} enregistré(e) localement !`, 'success');
+      clearForm();
+    } catch (error) {
+      console.error(error);
+      showToast('❌ Erreur lors de l\'enregistrement local', 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '✨ Enregistrer la présence';
+    }
+  }
+  
+  // Supprimer
+  window.deletePersonById = async function(id) {
+    if (!confirm('Supprimer cette inscription ?')) return;
+    try {
+      await deletePersonFromDB(id);
+      people = people.filter(p => p.id !== id);
+      updateUI();
+      showToast('Supprimé', 'success');
+    } catch (error) {
+      showToast('Erreur de suppression', 'error');
+    }
+  };
+  
+  // Export PDF
+  window.exportToPDF = async function() {
+    if (people.length === 0) { showToast('Aucune donnée', 'error'); return; }
+    showToast('Génération PDF...', 'info');
+    try {
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+      const now = new Date();
+      doc.setFontSize(20); doc.setTextColor(102,126,234); doc.text('Huperoon-Church', 20, 20);
+      doc.setFontSize(12); doc.setTextColor(0,0,0); doc.text('Registre de Présence (local)', 20, 30);
+      doc.setFontSize(9); doc.setTextColor(100,100,100);
+      doc.text(`Généré le ${now.toLocaleString('fr-FR')} - ${people.length} personnes`, 20, 38);
+      
+      const tableData = people.map((p, i) => [
+        i+1, p.nom, p.prenom, p.lieu||'—', p.contact||'—', 
+        p.is_member ? 'Membre' : `Visiteur (${p.church_name || ''})`, 
+        new Date(p.date).toLocaleString('fr-FR')
+      ]);
+      
+      doc.autoTable({
+        head: [['N°', 'Nom', 'Prénom', 'Lieu', 'Contact', 'Statut', 'Date']],
+        body: tableData,
+        startY: 45,
+        theme: 'striped',
+        headStyles: { fillColor: [102,126,234] },
+        styles: { fontSize: 8 }
+      });
+      doc.save(`huperoon_local_${now.toISOString().slice(0,10)}.pdf`);
+      showToast('PDF généré', 'success');
+    } catch(e) { 
+      console.error(e);
+      showToast('Erreur PDF', 'error'); 
+    }
+  };
+  
+  // Chargement initial
+  async function init() {
+    try {
+      await openDB();
+      people = await loadAllPeople();
+      updateUI();
+      showToast('📀 Base de données locale prête', 'success');
+    } catch (err) {
+      console.error(err);
+      showToast('Erreur d\'initialisation de la base', 'error');
+    }
+  }
+  
+  // Horloge
+  function updateClock() {
+    const now = new Date();
+    document.getElementById('liveDate').innerHTML = now.toLocaleString('fr-FR', { weekday:'short', day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' });
+  }
+  
+  // Recherche avec debounce
+  function setupSearch() {
+    const searchInput = document.getElementById('searchInput');
+    searchInput.addEventListener('input', () => {
+      if (searchTimeout) clearTimeout(searchTimeout);
+      searchTimeout = setTimeout(() => renderList(), 300);
+    });
+  }
+  
+  // Événements
+  document.getElementById('btnSubmit').onclick = addPerson;
+  document.getElementById('exportBtn').onclick = () => window.exportToPDF();
+  document.querySelectorAll('.filter-btn').forEach(btn => {
+    btn.onclick = () => setFilter(btn.dataset.filter);
+  });
+  
+  setupSearch();
+  updateClock();
+  setInterval(updateClock, 1000);
+  init();
+</script>
+</body>
+</html>
